@@ -1,109 +1,221 @@
+#include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <string.h>
 
-#define MAX_ESPERA 10
+#define FILE_DATABASE "bd_passageiros.dat"
+#define FILE_REQUESTS "server.fifo"
 
-// Funções auxiliares
-void so_error(char *step, char *message) {
-    fprintf(stderr, "Erro no passo %s: %s\n", step, message);
-    exit(1);
+// Define CheckIn struct if it's not already defined
+#ifndef CHECKIN_STRUCT_DEFINED
+#define CHECKIN_STRUCT_DEFINED
+typedef struct {
+    int nif;
+    char senha[40];
+    char nome[60];
+    char nrVoo[8];
+    int pidCliente;
+    int pidServidorDedicado;
+} CheckIn;
+#endif
+
+void _student_checkExistsDB_S1(char *nameDB) {
+    so_debug("< [@param nameDB:%s]", nameDB);
+
+    // Check if the database file exists
+    if (access(nameDB, F_OK) == -1) {
+        so_error("Database file does not exist");
+        exit(EXIT_FAILURE);
+    }
+
+    so_success("Database file exists");
 }
 
-void so_success(char *step, char *message) {
-    fprintf(stderr, "Sucesso no passo %s: %s\n", step, message);
+void _student_createFifo_S2(char *nameFifo) {
+    so_debug("< [@param nameFifo:%s]", nameFifo);
+
+    // Create FIFO for server requests
+    if (mkfifo(nameFifo, 0666) == -1) {
+        so_error("Error creating FIFO for server requests");
+        exit(EXIT_FAILURE);
+    }
+
+    so_success("FIFO created successfully");
 }
 
-void readClientRequest(char *clientRequest, char *fifoName) {
-    int fd;
-    if ((fd = open(fifoName, O_RDONLY)) < 0) {
-        so_error("S4", "Erro ao abrir FIFO do servidor para leitura");
-    }
+void _student_triggerSignals_S3(char *nameFifo) {
+    so_debug("<");
 
-    if (read(fd, clientRequest, sizeof(clientRequest)) < 0) {
-        so_error("S4", "Erro ao ler do FIFO do servidor");
-    }
+    // Implement signal handling for server
 
-    if (close(fd) < 0) {
-        so_error("S4", "Erro ao fechar o FIFO do servidor");
-    }
+    so_debug(">");
 }
 
-void writeSuccess(char *message, char *fifoName) {
-    int fd;
-    if ((fd = open(fifoName, O_WRONLY)) < 0) {
-        so_error("S5", "Erro ao abrir FIFO do cliente para escrita");
+CheckIn _student_readRequest_S4(char *nameFifo) {
+    CheckIn request;
+    request.nif = -1;   // Default value indicates error
+    so_debug("< [@param nameFifo:%s]", nameFifo);
+
+    // Read request from FIFO
+    int fd = open(nameFifo, O_RDONLY);
+    if (fd == -1) {
+        so_error("Error opening FIFO for reading");
+        request.nif = -1;
+        return request;
     }
 
-    if (write(fd, message, strlen(message)) < 0) {
-        so_error("S5", "Erro ao escrever no FIFO do cliente");
+    if (read(fd, &request, sizeof(CheckIn)) == -1) {
+        so_error("Error reading from FIFO");
+        request.nif = -1;
     }
 
-    if (close(fd) < 0) {
-        so_error("S5", "Erro ao fechar o FIFO do cliente");
-    }
+    close(fd);
+    so_success("Request read successfully", request.nif, request.senha, request.pidCliente);
+    return request;
 }
 
-// Handlers para os sinais
-void sigintHandler(int sig) {
-    so_success("S6", "Servidor: Start Shutdown");
-    // Implementar restante do tratamento do sinal SIGINT
-}
+int _student_createServidorDedicado_S5() {
+    int pid_filho = -1;    // Default value indicates error
+    so_debug("<");
 
-void sigchldHandler(int sig) {
-    // Implementar tratamento do sinal SIGCHLD
-}
-
-// Função principal
-int main() {
-    char fifoName[] = "server.fifo";
-    char clientRequest[256];
-
-    // Verificar a existência e permissões do ficheiro bd_passageiros.dat
-
-    // Criar FIFO do servidor
-    if (mkfifo(fifoName, 0666) < 0) {
-        so_error("S2", "Erro ao criar FIFO do servidor");
-    } else {
-        so_success("S2", "");
+    // Create dedicated server process
+    pid_filho = fork();
+    if (pid_filho == -1) {
+        so_error("Error creating dedicated server process");
+        exit(EXIT_FAILURE);
     }
 
-    // Armar e tratar os sinais SIGINT e SIGCHLD
-    if (signal(SIGINT, sigintHandler) == SIG_ERR || signal(SIGCHLD, sigchldHandler) == SIG_ERR) {
-        so_error("S3", "Erro ao armar os sinais");
-    } else {
-        so_success("S3", "");
+    if (pid_filho == 0) {
+        // Child process
+        so_success("Dedicated server process created successfully");
     }
 
+    so_debug("> [@return:%d]", pid_filho);
+    return pid_filho;
+}
+
+void _student_triggerSignals_SD9() {
+    so_debug("<");
+
+    // Implement signal handling for dedicated server
+
+    so_debug(">");
+}
+
+int _student_searchClientDB_SD10(CheckIn request, char *nameDB, CheckIn *itemDB) {
+    int indexClient = -1;    // Default value indicates error
+    so_debug("< [@param request.nif:%d, request.senha:%s, nameDB:%s, itemDB:%p]", request.nif,
+             request.senha, nameDB, itemDB);
+
+    // Search for client in the database file
+    FILE *file = fopen(nameDB, "rb");
+    if (file == NULL) {
+        so_error("Error opening database file for reading");
+        return indexClient;
+    }
+
+    CheckIn temp;
+    indexClient = 0;
+    while (fread(&temp, sizeof(CheckIn), 1, file) == 1) {
+        if (temp.nif == request.nif) {
+            *itemDB = temp;
+            fclose(file);
+            so_success("Client found in database", indexClient, temp.nome, temp.nrVoo);
+            return indexClient;
+        }
+        indexClient++;
+    }
+
+    fclose(file);
+    so_error("Client not found in database");
+    return -1;
+}
+
+void _student_checkinClientDB_SD11(CheckIn *request, char *nameDB, int indexClient, CheckIn itemDB) {
+    so_debug("< [@param request:%p, nameDB:%s, indexClient:%d, itemDB.pidServidorDedicado:%d]",
+             request, nameDB, indexClient, itemDB.pidServidorDedicado);
+
+    // Update client information in the database
+    FILE *file = fopen(nameDB, "rb+");
+    if (file == NULL) {
+        so_error("Error opening database file for writing");
+        return;
+    }
+
+    fseek(file, indexClient * sizeof(CheckIn), SEEK_SET);
+    fwrite(request, sizeof(CheckIn), 1, file);
+    fclose(file);
+
+    so_success("Client checked in successfully", request->nome, request->nrVoo, request->pidServidorDedicado);
+}
+
+void _student_sendAckCheckIn_SD12(int pidCliente) {
+    so_debug("< [@param pidCliente:%d]", pidCliente);
+
+    // Send acknowledgment to client
+    kill(pidCliente, SIGUSR1);
+
+    so_success("Acknowledgment sent to client");
+}
+
+void _student_closeSessionDB_SD13(CheckIn clientRequest, char *nameDB, int indexClient) {
+    so_debug("< [@param clientRequest:%p, nameDB:%s, indexClient:%d]", &clientRequest, nameDB,
+             indexClient);
+
+    // Close session and update client information in the database
+    clientRequest.pidServidorDedicado = getpid();
+    checkinClientDB_SD11(&clientRequest, nameDB, indexClient, clientRequest);
+
+    so_success("Session closed and database updated", clientRequest.pidCliente, 
+                clientRequest.pidServidorDedicado);
+}
+
+void _student_trataSinalSIGUSR2_SD14(int sinalRecebido) {
+    so_debug("< [@param sinalRecebido:%d]", sinalRecebido);
+
+    // Implement signal handling for SIGUSR2
+
+    so_debug(">");
+}
+
+void _student_main() {
+    // S1
+    checkExistsDB_S1(FILE_DATABASE);
+    // S2
+    createFifo_S2(FILE_REQUESTS);
+    // S3
+    triggerSignals_S3(FILE_REQUESTS);
+
+    int indexClient;       // Index of the client that made the request to the server/dedicated server in the DB
+
+    // S4: CICLO1
     while (1) {
-        int fd;
-        // Abrir FIFO do servidor para leitura
-        if ((fd = open(fifoName, O_RDONLY)) < 0) {
-            so_error("S4", "Erro ao abrir FIFO do servidor para leitura");
-        }
+        // S4
+        CheckIn clientRequest = readRequest_S4(FILE_REQUESTS); 
+        if (clientRequest.nif < 0)
+            continue;
 
-        // Ler informações do cliente do FIFO
-        readClientRequest(clientRequest, fifoName);
+        // S5
+        int pidServidorDedicado = createServidorDedicado_S5();
+        if (pidServidorDedicado > 0)
+            continue;
 
-        // Criar processo filho (Servidor Dedicado)
-        pid_t pidServidorDedicado = fork();
-        if (pidServidorDedicado < 0) {
-            so_error("S5", "Erro ao criar processo filho (Servidor Dedicado)");
-        } else if (pidServidorDedicado == 0) {
-            // Processo filho (Servidor Dedicado)
-            // Implementar lógica do Servidor Dedicado
-        } else {
-            // Processo pai
-            printf("Servidor: Iniciei SD %d\n", pidServidorDedicado);
-        }
+        // SD9
+        triggerSignals_SD9();
+        // SD10
+        CheckIn itemBD;
+        indexClient = searchClientDB_SD10(clientRequest, FILE_DATABASE, &itemBD);
+        // SD11
+        checkinClientDB_SD11(&clientRequest, FILE_DATABASE, indexClient, itemBD);
+        // SD12
+        sendAckCheckIn_SD12(clientRequest.pidCliente);
+        // SD13
+        closeSessionDB_SD13(clientRequest, FILE_DATABASE, indexClient);
     }
 
-    return 0;
+    so_exit_on_error(-1, "ERROR: The server should never reach this point");
 }
-
